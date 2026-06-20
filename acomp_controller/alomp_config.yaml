@@ -1,0 +1,61 @@
+# alomp_config.yaml
+#
+# ACOMP Context Map for the Google Online Boutique deployment.
+# Dependency edges reflect the actual gRPC call graph published by Google
+# Cloud's microservices-demo architecture documentation. Work factors below
+# are PLACEHOLDER values (0.50 default) -- they must be replaced with
+# empirically calibrated figures from the load-level calibration procedure
+# described in the thesis Methodology before any evaluation run. See
+# scripts/calibrate_work_factors.py once the calibration tooling is built.
+#
+# Calibration date: NOT YET RUN
+# Calibrated by:    (pending)
+
+pipeline:
+  services:
+    - name: frontend
+      downstream:
+        - service: productcatalogservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: cartservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: checkoutservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: currencyservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: shippingservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: recommendationservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: adservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+
+    - name: checkoutservice
+      downstream:
+        - service: paymentservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: emailservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: shippingservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: currencyservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: cartservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+        - service: productcatalogservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+
+    - name: cartservice
+      downstream:
+        - service: redis-cart
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+
+    - name: recommendationservice
+      downstream:
+        - service: productcatalogservice
+          work_factor: 0.50   # PLACEHOLDER -- calibrate
+
+  guardrails:
+    min_replicas: 1
+    max_replicas: 10
+    propagation_threshold: 0.30   # theta_prop -- suppress decisions below 30% of upstream delta

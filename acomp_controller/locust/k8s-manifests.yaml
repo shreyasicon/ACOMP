@@ -1,0 +1,88 @@
+# locust/k8s-manifests.yaml
+#
+# Deploys the ACOMP load generator into the cluster, targeting the Online
+# Boutique frontend service. Exposes a Prometheus-scrapable metrics endpoint
+# on port 9646 and registers a ServiceMonitor so kube-prometheus-stack's
+# Prometheus Operator automatically picks it up (matches the selector
+# convention used by kube-prometheus-stack's own ServiceMonitors).
+#
+# IMPORTANT: build and push the image referenced below before applying this
+# file. See locust/README.md (build_and_push.sh) for the exact commands
+# using your acompregistry Azure Container Registry.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acomp-loadgenerator
+  labels:
+    app: acomp-loadgenerator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: acomp-loadgenerator
+  template:
+    metadata:
+      labels:
+        app: acomp-loadgenerator
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64   # x86pool only -- see thesis note on ARM incompatibility
+      containers:
+        - name: locust
+          image: acompregistry.azurecr.io/acomp-loadgenerator:v1
+          args:
+            - "--host=http://frontend"
+            - "--headless"
+            - "--users=10"
+            - "--spawn-rate=2"
+            - "--run-time=1h"
+          ports:
+            - name: web-ui
+              containerPort: 8089
+            - name: metrics
+              containerPort: 9646
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: acomp-loadgenerator
+  labels:
+    app: acomp-loadgenerator
+spec:
+  selector:
+    app: acomp-loadgenerator
+  ports:
+    - name: web-ui
+      port: 8089
+      targetPort: 8089
+    - name: metrics
+      port: 9646
+      targetPort: 9646
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: acomp-loadgenerator
+  labels:
+    # This label MUST match the serviceMonitorSelector your
+    # kube-prometheus-stack Helm release was installed with. The default
+    # chart values use 'release: <helm-release-name>' -- since you installed
+    # with `helm install prometheus prometheus-community/kube-prometheus-stack`,
+    # the release name is 'prometheus'.
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: acomp-loadgenerator
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
