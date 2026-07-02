@@ -1,0 +1,143 @@
+# k8s-manifests.yaml
+# Deploys the ACOMP controller to the cluster alongside Online Boutique.
+# Apply with: kubectl apply -f k8s-manifests.yaml
+
+---
+# ServiceAccount with RBAC to read pods/deployments and patch scale subresource
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: acomp-controller
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: acomp-controller
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: acomp-controller
+subjects:
+  - kind: ServiceAccount
+    name: acomp-controller
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: acomp-controller
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ConfigMap: mounts alomp_config.yaml into the controller pod
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: acomp-config
+  namespace: default
+data:
+  alomp_config.yaml: |
+    pipeline:
+      services:
+        - name: frontend
+          downstream:
+            - service: productcatalogservice
+              work_factor: 0.50
+            - service: cartservice
+              work_factor: 0.50
+            - service: checkoutservice
+              work_factor: 0.50
+            - service: currencyservice
+              work_factor: 0.50
+            - service: shippingservice
+              work_factor: 0.50
+            - service: recommendationservice
+              work_factor: 0.50
+            - service: adservice
+              work_factor: 0.50
+        - name: checkoutservice
+          downstream:
+            - service: paymentservice
+              work_factor: 0.50
+            - service: emailservice
+              work_factor: 0.50
+            - service: shippingservice
+              work_factor: 0.50
+            - service: currencyservice
+              work_factor: 0.50
+            - service: cartservice
+              work_factor: 0.50
+            - service: productcatalogservice
+              work_factor: 0.50
+        - name: cartservice
+          downstream:
+            - service: redis-cart
+              work_factor: 0.50
+        - name: recommendationservice
+          downstream:
+            - service: productcatalogservice
+              work_factor: 0.50
+      guardrails:
+        min_replicas: 1
+        max_replicas: 10
+        propagation_threshold: 0.30
+
+---
+# Controller Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acomp-controller
+  namespace: default
+  labels:
+    app: acomp-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: acomp-controller
+  template:
+    metadata:
+      labels:
+        app: acomp-controller
+    spec:
+      serviceAccountName: acomp-controller
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: controller
+          image: acompregistry.azurecr.io/acomp-controller:v1
+          env:
+            - name: ACOMP_PROMETHEUS_URL
+              value: "http://prometheus-kube-prometheus-prometheus.monitoring:9090"
+            - name: ACOMP_NAMESPACE
+              value: "default"
+            - name: ACOMP_ENTRY_POINT
+              value: "frontend"
+            - name: ACOMP_POLL_INTERVAL
+              value: "15"
+            - name: ACOMP_DRY_RUN
+              value: "false"
+          volumeMounts:
+            - name: config
+              mountPath: /config
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: acomp-config
