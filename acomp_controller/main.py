@@ -1,23 +1,25 @@
 """
 main.py
 
-ACOMP controller entry point. Wires the five components (Context Map,
-Collector, Policy Engine, Actuator, Decision Logger) into a single
-15-second control loop and runs it until interrupted.
+ACOMP controller entry point — v2 with adaptive improvements.
 
-This module is the only entry point: it reads configuration from environment
-variables and alomp_config.yaml, initialises each component, then runs the
-control loop indefinitely. It is designed to run as a Kubernetes Deployment
-pod with a single replica.
+Improvements over v1:
+  1. Adaptive poll interval — polls faster under pressure (5s), slower when healthy (30s)
+  2. SLO violation counter — escalates to fast polling after 3 consecutive p99 > 500ms
+  3. Request rate trend detection — pre-scales when rate rising >20% per cycle
+  4. Consecutive pressure tracking — logs sustained pressure streaks for audit
 
 Environment variables (all optional, defaults shown):
-    ACOMP_CONFIG_PATH       path to alomp_config.yaml  (default: /config/alomp_config.yaml)
-    ACOMP_PROMETHEUS_URL    Prometheus HTTP endpoint    (default: http://prometheus-kube-prometheus-prometheus.monitoring:9090)
-    ACOMP_NAMESPACE         Kubernetes namespace        (default: default)
-    ACOMP_ENTRY_POINT       entry-point service name    (default: frontend)
-    ACOMP_POLL_INTERVAL     control cycle seconds       (default: 15)
-    ACOMP_DRY_RUN           if "true", no K8s patches   (default: false)
-    ACOMP_LOG_FILE          write logs to file instead of stdout (default: unset = stdout)
+    ACOMP_CONFIG_PATH           path to alomp_config.yaml  (default: /config/alomp_config.yaml)
+    ACOMP_PROMETHEUS_URL        Prometheus HTTP endpoint    (default: http://prometheus-kube-prometheus-prometheus.monitoring:9090)
+    ACOMP_NAMESPACE             Kubernetes namespace        (default: default)
+    ACOMP_ENTRY_POINT           entry-point service name    (default: frontend)
+    ACOMP_POLL_INTERVAL         base control cycle seconds  (default: 15)
+    ACOMP_POLL_INTERVAL_FAST    fast cycle under pressure   (default: 5)
+    ACOMP_POLL_INTERVAL_SLOW    slow cycle when healthy     (default: 30)
+    ACOMP_DRY_RUN               if "true", no K8s patches   (default: false)
+    ACOMP_LOG_FILE              write logs to file instead of stdout
+    ACOMP_SLO_VIOLATION_WINDOW  consecutive SLO violations before escalation (default: 3)
 """
 
 from __future__ import annotations
@@ -34,13 +36,10 @@ from acomp.policy_engine import PolicyEngine
 from acomp.actuator import Actuator
 from acomp.decision_logger import DecisionLogger
 
-# ------------------------------------------------------------------
-# Logging setup -- structured enough for Azure Monitor to parse
-# ------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    stream=sys.stderr,   # operational logs go to stderr; decision records go to stdout
+    stream=sys.stderr,
 )
 logger = logging.getLogger("acomp.main")
 
@@ -50,29 +49,29 @@ def read_env(key: str, default: str) -> str:
 
 
 def main() -> int:
-    logger.info("ACOMP controller starting")
+    logger.info("ACOMP controller starting (v2 — adaptive)")
 
-    # ------------------------------------------------------------------
-    # Configuration from environment
-    # ------------------------------------------------------------------
-    config_path      = read_env("ACOMP_CONFIG_PATH",    "/config/alomp_config.yaml")
-    prometheus_url   = read_env("ACOMP_PROMETHEUS_URL", "http://prometheus-kube-prometheus-prometheus.monitoring:9090")
-    namespace        = read_env("ACOMP_NAMESPACE",      "default")
-    entry_point      = read_env("ACOMP_ENTRY_POINT",    "frontend")
-    poll_interval    = float(read_env("ACOMP_POLL_INTERVAL", "15"))
-    dry_run          = read_env("ACOMP_DRY_RUN", "false").lower() == "true"
-    log_file         = read_env("ACOMP_LOG_FILE", "") or None
+    # ── Configuration ────────────────────────────────────────────────
+    config_path         = read_env("ACOMP_CONFIG_PATH",    "/config/alomp_config.yaml")
+    prometheus_url      = read_env("ACOMP_PROMETHEUS_URL", "http://prometheus-kube-prometheus-prometheus.monitoring:9090")
+    namespace           = read_env("ACOMP_NAMESPACE",      "default")
+    entry_point         = read_env("ACOMP_ENTRY_POINT",    "frontend")
+    poll_interval       = float(read_env("ACOMP_POLL_INTERVAL",      "15"))
+    poll_interval_fast  = float(read_env("ACOMP_POLL_INTERVAL_FAST", "5"))
+    poll_interval_slow  = float(read_env("ACOMP_POLL_INTERVAL_SLOW", "30"))
+    dry_run             = read_env("ACOMP_DRY_RUN", "false").lower() == "true"
+    log_file            = read_env("ACOMP_LOG_FILE", "") or None
+    slo_window          = int(read_env("ACOMP_SLO_VIOLATION_WINDOW", "3"))
 
     logger.info(
-        "Config: path=%s prometheus=%s namespace=%s entry_point=%s "
-        "interval=%.0fs dry_run=%s",
-        config_path, prometheus_url, namespace, entry_point,
-        poll_interval, dry_run,
+        "Config: prometheus=%s namespace=%s entry=%s "
+        "intervals: fast=%.0fs base=%.0fs slow=%.0fs slo_window=%d dry_run=%s",
+        prometheus_url, namespace, entry_point,
+        poll_interval_fast, poll_interval, poll_interval_slow,
+        slo_window, dry_run,
     )
 
-    # ------------------------------------------------------------------
-    # Component initialisation
-    # ------------------------------------------------------------------
+    # ── Component initialisation ─────────────────────────────────────
     logger.info("Loading Context Map from %s", config_path)
     try:
         context_map = load_context_map(config_path)
@@ -84,27 +83,13 @@ def main() -> int:
     logger.info("Context Map loaded: %d services, max_replicas=%d",
                 len(service_names), context_map.guardrails.max_replicas)
 
-    collector = Collector(
-        prometheus_url=prometheus_url,
-        namespace=namespace,
-        service_names=service_names,
-        entry_point_service=entry_point,
-    )
-
-    policy_engine = PolicyEngine(context_map=context_map)
-
-    actuator = Actuator(
-        namespace=namespace,
-        context_map=context_map,
-        dry_run=dry_run,
-    )
-
+    collector      = Collector(prometheus_url=prometheus_url, namespace=namespace,
+                               service_names=service_names, entry_point_service=entry_point)
+    policy_engine  = PolicyEngine(context_map=context_map)
+    actuator       = Actuator(namespace=namespace, context_map=context_map, dry_run=dry_run)
     decision_logger = DecisionLogger(output_file=log_file)
 
-    # ------------------------------------------------------------------
-    # Graceful shutdown on SIGTERM / SIGINT (Kubernetes sends SIGTERM
-    # when a pod is being terminated)
-    # ------------------------------------------------------------------
+    # ── Graceful shutdown ────────────────────────────────────────────
     running = True
 
     def _shutdown(signum, frame):
@@ -115,52 +100,94 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT,  _shutdown)
 
-    # ------------------------------------------------------------------
-    # Main control loop
-    # ------------------------------------------------------------------
-    cycle_number = 0
-    logger.info("Control loop starting, poll interval=%.0fs", poll_interval)
+    # ── Adaptive state ───────────────────────────────────────────────
+    cycle_number               = 0
+    consecutive_pressure       = 0   # sustained pressure streak
+    consecutive_slo_violations = 0   # p99 > 500ms streak
+    prev_request_rate          = None
+    current_interval           = poll_interval
+
+    logger.info("Control loop starting — base=%.0fs fast=%.0fs slow=%.0fs",
+                poll_interval, poll_interval_fast, poll_interval_slow)
 
     while running:
         cycle_start = time.monotonic()
         cycle_number += 1
 
         try:
-            # Stage 1: Collect
+            # ── Stage 1: Collect ──────────────────────────────────────
             snapshot = collector.poll()
 
-            # Stage 2: Decide
-            decision_set, audit_record = policy_engine.run_cycle(snapshot)
+            # ── Improvement 3: Request rate trend detection ───────────
+            # If req/s rises >20% since last cycle, signal pre-scaling
+            current_rate    = snapshot.request_rate
+            rate_rising     = False
+            if prev_request_rate and current_rate and prev_request_rate > 0:
+                rate_change = (current_rate - prev_request_rate) / prev_request_rate
+                if rate_change > 0.20:
+                    rate_rising = True
+                    logger.info(
+                        "Request rate rising fast: %.2f->%.2f req/s (+%.0f%%) "
+                        "-- pre-scaling signal",
+                        prev_request_rate, current_rate, rate_change * 100,
+                    )
+            prev_request_rate = current_rate
 
-            # Stage 3: Actuate
+            # ── Stage 2: Decide ───────────────────────────────────────
+            decision_set, audit_record = policy_engine.run_cycle(
+                snapshot, rate_rising_fast=rate_rising
+            )
+
+            # ── Stage 3: Actuate ──────────────────────────────────────
             actuator_report = actuator.apply(decision_set)
 
-            # Stage 4: Log
+            # ── Stage 4: Log ──────────────────────────────────────────
             decision_logger.log(
                 audit=audit_record,
                 actuation=actuator_report,
                 cycle_number=cycle_number,
             )
 
+            # ── Improvement 1: Adaptive poll interval ─────────────────
+            state = audit_record.pipeline_state
+            if state == "HEALTHY":
+                consecutive_pressure       = 0
+                consecutive_slo_violations = 0
+                current_interval = poll_interval_slow   # back off when stable
+            elif state in ("UPSTREAM_LOAD_PRESSURE", "DOWNSTREAM_DEGRADATION"):
+                consecutive_pressure += 1
+                current_interval = poll_interval_fast   # react faster under pressure
+            else:
+                current_interval = poll_interval        # base for PIPELINE_CEILING
+
+            # ── Improvement 2: SLO violation escalation ───────────────
+            p99 = snapshot.p99_latency_ms
+            if p99 and p99 > 500.0:
+                consecutive_slo_violations += 1
+                if consecutive_slo_violations >= slo_window:
+                    logger.warning(
+                        "SLO violated %d consecutive cycles (p99=%.0fms) "
+                        "-- forcing fast interval",
+                        consecutive_slo_violations, p99,
+                    )
+                    current_interval = poll_interval_fast
+            else:
+                consecutive_slo_violations = 0
+
         except Exception:
             logger.exception("Unhandled error in cycle %d -- skipping", cycle_number)
+            current_interval = poll_interval
 
-        # Drift-corrected sleep: subtract time already spent this cycle
-        elapsed = time.monotonic() - cycle_start
-        sleep_for = max(0.0, poll_interval - elapsed)
+        # ── Drift-corrected sleep ─────────────────────────────────────
+        elapsed    = time.monotonic() - cycle_start
+        sleep_for  = max(0.0, current_interval - elapsed)
 
-        if elapsed > poll_interval:
-            logger.warning(
-                "Cycle %d took %.1fs > poll interval %.0fs",
-                cycle_number, elapsed, poll_interval,
-            )
-
+        if elapsed > current_interval:
+            logger.warning("Cycle %d took %.1fs > interval %.0fs",
+                           cycle_number, elapsed, current_interval)
         if running:
             time.sleep(sleep_for)
 
-    # ------------------------------------------------------------------
-    # Clean shutdown
-    # ------------------------------------------------------------------
     decision_logger.close()
     logger.info("ACOMP controller stopped after %d cycles", cycle_number)
     return 0

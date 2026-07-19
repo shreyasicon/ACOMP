@@ -166,21 +166,43 @@ class PolicyEngine:
         self.context_map = context_map
 
     def run_cycle(
-        self, snapshot: MetricSnapshot
+        self, snapshot: MetricSnapshot,
+        rate_rising_fast: bool = False,
     ) -> tuple[DecisionSet, AuditRecord]:
         """
-        Executes one full Policy Engine cycle as per Algorithm 1.
+        Executes one full Policy Engine cycle as per Algorithm 1 (v2).
 
-        Returns a (DecisionSet, AuditRecord) tuple. The DecisionSet contains
-        all decisions including suppressed and guardrail-clamped ones, so
-        the Actuator only needs to execute decision_set.actionable(). The
-        AuditRecord contains the full reasoning path for the Decision Logger.
+        Improvements over v1:
+          - rate_rising_fast: pre-scaling signal from main.py when request
+            rate rises >20% per cycle. Lowers effective CPU threshold by 10%
+            so ACOMP acts before CPU actually crosses 70%.
+          - Multi-metric threshold: CPU OR (high latency AND rising rate)
+            can trigger UPSTREAM_LOAD_PRESSURE classification.
+
+        Returns a (DecisionSet, AuditRecord) tuple.
         """
         import time
         cycle_start = time.monotonic()
 
         decision_set = DecisionSet()
         rejected: list[dict] = []
+
+        # ------------------------------------------------------------------
+        # Improvement: adaptive CPU threshold
+        # If request rate is rising fast, lower effective threshold by 10%
+        # so ACOMP pre-scales before CPU actually crosses 70%.
+        # This directly addresses the Scenario 1 reactive lag finding.
+        # ------------------------------------------------------------------
+        effective_cpu_threshold = (
+            CPU_PRESSURE_THRESHOLD * 0.90  # 63% threshold when rate rising
+            if rate_rising_fast
+            else CPU_PRESSURE_THRESHOLD    # normal 70% threshold
+        )
+        if rate_rising_fast:
+            logger.info(
+                "Pre-scaling mode: effective CPU threshold lowered to %.0f%%",
+                effective_cpu_threshold * 100
+            )
 
         # ------------------------------------------------------------------
         # Stage 1: State Classification (Algorithm 1, Lines 1-11)
@@ -199,10 +221,25 @@ class PolicyEngine:
             req_rate = metrics.request_rate
             latency = metrics.latency_p99_ms
 
-            cpu_pressure = cpu is not None and cpu > CPU_PRESSURE_THRESHOLD
+            # ── Improvement: multi-metric threshold ───────────────────
+            # Standard: CPU > effective threshold (adaptive, 63% when rate rising)
+            # Additional: high latency AND rate rising = early pressure signal
+            cpu_pressure = cpu is not None and cpu > effective_cpu_threshold
 
-            if not cpu_pressure:
+            latency_pressure = (
+                rate_rising_fast
+                and metrics.latency_p99_ms is not None
+                and metrics.latency_p99_ms > LATENCY_HIGH_THRESHOLD_MS
+            )
+
+            if not cpu_pressure and not latency_pressure:
                 continue
+
+            if latency_pressure and not cpu_pressure:
+                reasoning_lines.append(
+                    f"{name}: latency={_fmt_ms(metrics.latency_p99_ms)} with rising "
+                    f"request rate -- multi-metric pre-scaling trigger"
+                )
 
             # Service is under CPU pressure -- use latency to distinguish cause.
             # DOWNSTREAM_DEGRADATION: high latency (> SLO threshold) with normal
@@ -273,7 +310,7 @@ class PolicyEngine:
             # Kubernetes HPA target-utilisation formula (Equation 5):
             #   delta_root = ceil(r_root * cpu_root / theta_cpu) - r_root
             if cpu_root is not None and r_root > 0:
-                desired = math.ceil(r_root * cpu_root / CPU_PRESSURE_THRESHOLD)
+                desired = math.ceil(r_root * cpu_root / effective_cpu_threshold)
                 delta_root = max(0, desired - r_root)
             else:
                 delta_root = 1  # Fallback: add one replica if CPU data missing
@@ -283,7 +320,7 @@ class PolicyEngine:
 
             reasoning_lines.append(
                 f"{root_cause}: HPA formula -> "
-                f"ceil({r_root} * {_fmt_pct(cpu_root)} / {CPU_PRESSURE_THRESHOLD:.0%}) "
+                f"ceil({r_root} * {_fmt_pct(cpu_root)} / {effective_cpu_threshold:.0%}) "
                 f"- {r_root} = delta {delta_root}"
             )
 

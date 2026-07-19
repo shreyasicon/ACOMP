@@ -125,6 +125,12 @@ spec:
               value: "frontend"
             - name: ACOMP_POLL_INTERVAL
               value: "15"
+            - name: ACOMP_POLL_INTERVAL_FAST
+              value: "5"
+            - name: ACOMP_POLL_INTERVAL_SLOW
+              value: "30"
+            - name: ACOMP_SLO_VIOLATION_WINDOW
+              value: "3"
             - name: ACOMP_DRY_RUN
               value: "false"
           volumeMounts:

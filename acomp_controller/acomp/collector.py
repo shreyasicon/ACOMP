@@ -73,9 +73,17 @@ class ServiceMetrics:
 @dataclass
 class MetricSnapshot:
     """The full per-cycle output of the Collector: one ServiceMetrics per
-    known pipeline service, plus the timestamp the snapshot was taken at."""
+    known pipeline service, plus the timestamp the snapshot was taken at.
+
+    Pipeline-level metrics (request_rate, p99_latency_ms, error_rate) are
+    taken from the entry-point service and stored here for convenience so
+    main.py can access them without iterating over services.
+    """
     timestamp: datetime
     services: dict[str, ServiceMetrics] = field(default_factory=dict)
+    request_rate:   float | None = None   # entry-point req/s
+    p99_latency_ms: float | None = None   # entry-point p99 latency
+    error_rate:     float | None = None   # entry-point error rate
 
     def get(self, service_name: str) -> ServiceMetrics | None:
         return self.services.get(service_name)
@@ -143,9 +151,13 @@ class Collector:
         # Entry-point-only metrics (request rate, p99 latency, error rate)
         entry = snapshot.services.get(self.entry_point_service)
         if entry is not None:
-            entry.request_rate = self._query_request_rate_entry_point()
-            entry.latency_p99_ms = self._query_latency_p99_entry_point()
-            entry.error_rate = self._query_error_rate_entry_point()
+            entry.request_rate    = self._query_request_rate_entry_point()
+            entry.latency_p99_ms  = self._query_latency_p99_entry_point()
+            entry.error_rate      = self._query_error_rate_entry_point()
+            # Also store at snapshot level for convenient access in main.py
+            snapshot.request_rate   = entry.request_rate
+            snapshot.p99_latency_ms = entry.latency_p99_ms
+            snapshot.error_rate     = entry.error_rate
         else:
             logger.warning(
                 "Entry-point service '%s' not found in service_names; "
@@ -219,9 +231,9 @@ class Collector:
             f'sum by (pod) ('
             f'  rate(container_cpu_usage_seconds_total{{namespace="{self.namespace}", '
             f'  container!="", container!="POD"}}[{RATE_WINDOW}])'
-            f') / on(pod) '
+            f') / '
             f'sum by (pod) ('
-            f'  kube_pod_container_resource_requests{{namespace="{self.namespace}", resource="cpu"}}'
+            f'  kube_pod_container_resource_requests{{namespace="{self.namespace}", resource="cpu", container!=""}}'
             f')'
         )
         results = self._safe_instant_query(promql, "cpu_utilisation")

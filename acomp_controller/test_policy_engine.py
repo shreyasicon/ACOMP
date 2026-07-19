@@ -83,7 +83,7 @@ def test_healthy_state():
         cartservice={"cpu": 0.20, "replicas": 1},
         productcatalogservice={"cpu": 0.25, "replicas": 1},
     )
-    ds, audit = engine.run_cycle(snapshot)
+    ds, audit = engine.run_cycle(snapshot, rate_rising_fast=False)
 
     assert audit.pipeline_state == PipelineState.HEALTHY.value, \
         f"Expected HEALTHY, got {audit.pipeline_state}"
@@ -113,7 +113,7 @@ def test_upstream_load_pressure_with_propagation():
         cartservice={"cpu": 0.20, "replicas": 1},
         productcatalogservice={"cpu": 0.15, "replicas": 1},
     )
-    ds, audit = engine.run_cycle(snapshot)
+    ds, audit = engine.run_cycle(snapshot, rate_rising_fast=False)
 
     assert audit.pipeline_state == PipelineState.UPSTREAM_LOAD_PRESSURE.value, \
         f"Expected UPSTREAM_LOAD_PRESSURE, got {audit.pipeline_state}"
@@ -146,7 +146,7 @@ def test_upstream_load_pressure_propagates_to_downstream():
         cartservice={"cpu": 0.40, "replicas": 3},
         productcatalogservice={"cpu": 0.30, "replicas": 2},
     )
-    ds, audit = engine.run_cycle(snapshot)
+    ds, audit = engine.run_cycle(snapshot, rate_rising_fast=False)
 
     assert audit.pipeline_state == PipelineState.UPSTREAM_LOAD_PRESSURE.value
     assert audit.root_cause_service == "frontend"
@@ -196,7 +196,7 @@ def test_downstream_degradation_suppresses_scaling():
         cartservice={"cpu": 0.20, "replicas": 1},
         productcatalogservice={"cpu": 0.15, "replicas": 1},
     )
-    ds, audit = engine.run_cycle(snapshot)
+    ds, audit = engine.run_cycle(snapshot, rate_rising_fast=False)
 
     assert audit.pipeline_state == PipelineState.DOWNSTREAM_DEGRADATION.value, \
         f"Expected DOWNSTREAM_DEGRADATION, got {audit.pipeline_state}"
@@ -228,7 +228,7 @@ def test_pipeline_ceiling_when_guardrail_hit():
         cartservice={"cpu": 0.50, "replicas": 5},
         productcatalogservice={"cpu": 0.45, "replicas": 4},
     )
-    ds, audit = engine.run_cycle(snapshot)
+    ds, audit = engine.run_cycle(snapshot, rate_rising_fast=False)
 
     assert audit.pipeline_state == PipelineState.PIPELINE_CEILING.value, \
         f"Expected PIPELINE_CEILING, got {audit.pipeline_state}"
@@ -255,7 +255,7 @@ def test_audit_record_is_complete():
         cartservice={"cpu": 0.30, "replicas": 2},
         productcatalogservice={"cpu": 0.20, "replicas": 1},
     )
-    ds, audit = engine.run_cycle(snapshot)
+    ds, audit = engine.run_cycle(snapshot, rate_rising_fast=False)
 
     record = audit.to_dict()
 
@@ -293,8 +293,8 @@ def test_policy_engine_is_deterministic():
         productcatalogservice={"cpu": 0.25, "replicas": 1},
     )
 
-    ds1, audit1 = engine.run_cycle(snapshot)
-    ds2, audit2 = engine.run_cycle(snapshot)
+    ds1, audit1 = engine.run_cycle(snapshot, rate_rising_fast=False)
+    ds2, audit2 = engine.run_cycle(snapshot, rate_rising_fast=False)
 
     assert audit1.pipeline_state == audit2.pipeline_state
     assert audit1.root_cause_service == audit2.root_cause_service
