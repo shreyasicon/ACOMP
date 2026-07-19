@@ -103,12 +103,15 @@ def main() -> int:
     # ── Adaptive state ───────────────────────────────────────────────
     cycle_number               = 0
     consecutive_pressure       = 0   # sustained pressure streak
+    consecutive_healthy        = 0   # sustained healthy streak
     consecutive_slo_violations = 0   # p99 > 500ms streak
     prev_request_rate          = None
     current_interval           = poll_interval
+    last_scale_time            = 0.0  # monotonic time of last APPLIED scale action
+    SCALE_COOLDOWN_SECONDS     = 30.0 # minimum seconds between scale actions
 
-    logger.info("Control loop starting — base=%.0fs fast=%.0fs slow=%.0fs",
-                poll_interval, poll_interval_fast, poll_interval_slow)
+    logger.info("Control loop starting — base=%.0fs fast=%.0fs slow=%.0fs cooldown=%.0fs",
+                poll_interval, poll_interval_fast, poll_interval_slow, SCALE_COOLDOWN_SECONDS)
 
     while running:
         cycle_start = time.monotonic()
@@ -138,8 +141,21 @@ def main() -> int:
                 snapshot, rate_rising_fast=rate_rising
             )
 
-            # ── Stage 3: Actuate ──────────────────────────────────────
-            actuator_report = actuator.apply(decision_set)
+            # ── Stage 3: Actuate (with cooldown guard) ───────────────
+            # Suppress scale actions if within cooldown window to prevent
+            # rapid up/down thrashing from fast polling cycles.
+            now_check = time.monotonic()
+            cooldown_active = (now_check - last_scale_time) < SCALE_COOLDOWN_SECONDS
+            if cooldown_active and decision_set.actionable():
+                remaining = SCALE_COOLDOWN_SECONDS - (now_check - last_scale_time)
+                logger.info(
+                    "Cooldown active (%.0fs remaining) -- suppressing %d scale actions",
+                    remaining, len(decision_set.actionable())
+                )
+                from acomp.actuator import ActuatorReport
+                actuator_report = ActuatorReport()  # empty report, no patches sent
+            else:
+                actuator_report = actuator.apply(decision_set)
 
             # ── Stage 4: Log ──────────────────────────────────────────
             decision_logger.log(
@@ -148,17 +164,34 @@ def main() -> int:
                 cycle_number=cycle_number,
             )
 
-            # ── Improvement 1: Adaptive poll interval ─────────────────
+            # ── Improvement 1: Adaptive poll interval with hysteresis ────
+            # Use fast polling ONLY during active pressure.
+            # Require 10 consecutive HEALTHY cycles before slowing down
+            # (hysteresis prevents rapid switching that caused thrashing in v2.0)
             state = audit_record.pipeline_state
             if state == "HEALTHY":
-                consecutive_pressure       = 0
-                consecutive_slo_violations = 0
-                current_interval = poll_interval_slow   # back off when stable
+                consecutive_pressure = 0
+                consecutive_healthy += 1
+                # Only slow down after sustained stability (10 cycles = 150s at base)
+                if consecutive_healthy >= 10:
+                    current_interval = poll_interval_slow
+                else:
+                    current_interval = poll_interval  # stay at base during transition
             elif state in ("UPSTREAM_LOAD_PRESSURE", "DOWNSTREAM_DEGRADATION"):
                 consecutive_pressure += 1
-                current_interval = poll_interval_fast   # react faster under pressure
+                consecutive_healthy = 0
+                current_interval = poll_interval_fast  # react faster under pressure
             else:
-                current_interval = poll_interval        # base for PIPELINE_CEILING
+                current_interval = poll_interval       # base for PIPELINE_CEILING
+
+            # ── Cooldown: prevent thrashing ───────────────────────────
+            # If a scale action was applied this cycle, enforce a cooldown
+            # before the next scale — prevents rapid up/down oscillation
+            # that occurs when fast polling detects transient CPU spikes.
+            now = time.monotonic()
+            if actuator_report.applied():
+                last_scale_time = now
+                logger.debug("Scale applied — cooldown starts (%.0fs)", SCALE_COOLDOWN_SECONDS)
 
             # ── Improvement 2: SLO violation escalation ───────────────
             p99 = snapshot.p99_latency_ms
