@@ -296,7 +296,103 @@ def main():
     print(f"    {txt_path}")
     print(f"{'='*60}\n")
 
+    # ── Auto-generate plots from all captured results ─────────────────
+    _auto_plot()
+
     return 0
+
+
+def _auto_plot():
+    """
+    Regenerate all evaluation plots from the current results/ directory.
+    Called automatically after every capture_metrics.py run so graphs
+    always reflect the latest real data.
+    """
+    import subprocess as sp
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    plot_script  = os.path.join(scripts_dir, "plot_results.py")
+    results_dir  = os.path.join(os.path.dirname(scripts_dir), "results")
+    plots_dir    = os.path.join(os.path.dirname(scripts_dir), "plots")
+
+    if not os.path.exists(plot_script):
+        print("  [plots] plot_results.py not found — skipping")
+        return
+
+    os.makedirs(plots_dir, exist_ok=True)
+    print("  Regenerating evaluation plots...")
+
+    try:
+        result = sp.run(
+            [sys.executable, plot_script,
+             "--output-dir", plots_dir,
+             "--results-dir", results_dir,
+             "--format", "png"],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode == 0:
+            saved = [l for l in result.stdout.splitlines() if "Saved:" in l]
+            print(f"  [plots] {len(saved)} figures updated in {plots_dir}/")
+        else:
+            print(f"  [plots] WARNING: {result.stderr[:200]}")
+    except Exception as e:
+        print(f"  [plots] Skipped: {e}")
+
+    # ── Auto git add + commit ─────────────────────────────────────────
+    _git_commit(results_dir, plots_dir)
+
+
+def _git_commit(results_dir, plots_dir):
+    """
+    Stage results/ and plots/ and commit with timestamp.
+    Only commits if there are actual changes — safe to call always.
+    """
+    import subprocess as sp
+    from datetime import datetime
+
+    # Find git root
+    try:
+        git_root = sp.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=os.path.dirname(results_dir),
+            stderr=sp.DEVNULL
+        ).decode().strip()
+    except Exception:
+        print("  [git] Not a git repo — skipping auto-commit")
+        return
+
+    # Stage files
+    sp.run(["git", "add", results_dir, plots_dir],
+           cwd=git_root, capture_output=True)
+
+    # Check if anything staged
+    status = sp.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=git_root, capture_output=True
+    )
+    if status.returncode == 0:
+        print("  [git] Nothing new to commit")
+        return
+
+    # Commit
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    msg = f"Auto: results + plots updated {timestamp}"
+    result = sp.run(
+        ["git", "commit", "-m", msg],
+        cwd=git_root, capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print(f"  [git] Committed: {msg}")
+        # Push
+        push = sp.run(
+            ["git", "push", "origin", "main"],
+            cwd=git_root, capture_output=True, text=True
+        )
+        if push.returncode == 0:
+            print("  [git] Pushed to origin/main")
+        else:
+            print(f"  [git] Push failed (run manually): {push.stderr[:100]}")
+    else:
+        print(f"  [git] Commit failed: {result.stderr[:100]}")
 
 
 if __name__ == "__main__":

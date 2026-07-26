@@ -116,6 +116,10 @@ spec:
       containers:
         - name: controller
           image: acompregistry.azurecr.io/acomp-controller:v1
+          ports:
+            - containerPort: 8080
+              name: api
+              protocol: TCP
           env:
             - name: ACOMP_PROMETHEUS_URL
               value: "http://prometheus-kube-prometheus-prometheus.monitoring:9090"
@@ -133,6 +137,8 @@ spec:
               value: "3"
             - name: ACOMP_DRY_RUN
               value: "false"
+            - name: ACOMP_API_PORT
+              value: "8080"
           volumeMounts:
             - name: config
               mountPath: /config

@@ -507,8 +507,31 @@ def main():
     args = parser.parse_args()
 
     try:
+        # Auto-start audit log capture in background for ACOMP runs
+        audit_proc = None
+        if args.comparator == "acomp":
+            scripts_dir = os.path.dirname(os.path.abspath(__file__))
+            audit_script = os.path.join(scripts_dir, "capture_audit_logs.py")
+            if os.path.exists(audit_script):
+                print(f"  Starting audit log capture in background...")
+                audit_proc = subprocess.Popen(
+                    [sys.executable, audit_script,
+                     "--scenario", str(args.scenario),
+                     "--background"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                print(f"  Audit capture PID: {audit_proc.pid}")
+
         results_dir = run_scenario(args.scenario, args.comparator)
         print(f"\nDone. Results: {results_dir}")
+
+        # Stop audit capture
+        if audit_proc:
+            audit_proc.terminate()
+            audit_proc.wait()
+            print("  Audit log capture complete — check results/audit_logs/")
+
         return 0
     except KeyboardInterrupt:
         print("\nInterrupted by user.")

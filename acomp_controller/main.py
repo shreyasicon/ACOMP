@@ -35,6 +35,9 @@ from acomp.collector import Collector
 from acomp.policy_engine import PolicyEngine
 from acomp.actuator import Actuator
 from acomp.decision_logger import DecisionLogger
+from acomp.explainability_api import ExplainabilityAPI
+from acomp.adaptive_engine import AdaptiveEngine
+from acomp.adaptive_engine import AdaptiveEngine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,7 +52,7 @@ def read_env(key: str, default: str) -> str:
 
 
 def main() -> int:
-    logger.info("ACOMP controller starting (v2 — adaptive)")
+    logger.info("ACOMP controller starting (v4 — slope + EWMA + per-service cooldown + API + SLO prediction)")
 
     # ── Configuration ────────────────────────────────────────────────
     config_path         = read_env("ACOMP_CONFIG_PATH",    "/config/alomp_config.yaml")
@@ -62,6 +65,7 @@ def main() -> int:
     dry_run             = read_env("ACOMP_DRY_RUN", "false").lower() == "true"
     log_file            = read_env("ACOMP_LOG_FILE", "") or None
     slo_window          = int(read_env("ACOMP_SLO_VIOLATION_WINDOW", "3"))
+    api_port            = int(read_env("ACOMP_API_PORT", "8080"))
 
     logger.info(
         "Config: prometheus=%s namespace=%s entry=%s "
@@ -89,6 +93,18 @@ def main() -> int:
     actuator       = Actuator(namespace=namespace, context_map=context_map, dry_run=dry_run)
     decision_logger = DecisionLogger(output_file=log_file)
 
+    # ── Start Adaptive Engine ────────────────────────────────────────
+    adaptive = AdaptiveEngine(config_path)
+    logger.info("AdaptiveEngine started — mode=%s", adaptive.current_mode().name)
+
+    # ── Start Adaptive Engine ────────────────────────────────────────
+    adaptive = AdaptiveEngine(config_path)
+    logger.info("AdaptiveEngine ready — mode=%s", adaptive.current_mode().name)
+
+    # ── Start Explainability API ─────────────────────────────────────
+    api = ExplainabilityAPI(decision_logger, port=api_port)
+    api.start()
+
     # ── Graceful shutdown ────────────────────────────────────────────
     running = True
 
@@ -100,18 +116,23 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT,  _shutdown)
 
-    # ── Adaptive state ───────────────────────────────────────────────
+    # ── Adaptive state (v4) ──────────────────────────────────────────
     cycle_number               = 0
     consecutive_pressure       = 0   # sustained pressure streak
     consecutive_healthy        = 0   # sustained healthy streak
     consecutive_slo_violations = 0   # p99 > 500ms streak
     prev_request_rate          = None
     current_interval           = poll_interval
-    last_scale_time            = 0.0  # monotonic time of last APPLIED scale action
-    SCALE_COOLDOWN_SECONDS     = 30.0 # minimum seconds between scale actions
+    # Per-service cooldown: track last scale time per service independently
+    # Allows fast response to a newly pressured service while cooling others
+    last_scale_time: dict[str, float] = {}
+    SCALE_COOLDOWN_SECONDS     = 30.0 # minimum seconds between scale actions per service
 
-    logger.info("Control loop starting — base=%.0fs fast=%.0fs slow=%.0fs cooldown=%.0fs",
-                poll_interval, poll_interval_fast, poll_interval_slow, SCALE_COOLDOWN_SECONDS)
+    logger.info(
+        "ACOMP v4 starting — base=%.0fs fast=%.0fs slow=%.0fs "
+        "per-service-cooldown=%.0fs EWMA+slope active",
+        poll_interval, poll_interval_fast, poll_interval_slow, SCALE_COOLDOWN_SECONDS
+    )
 
     while running:
         cycle_start = time.monotonic()
@@ -136,24 +157,67 @@ def main() -> int:
                     )
             prev_request_rate = current_rate
 
+            # SLO trend alert: linear regression predicts breach within 2 cycles
+            if snapshot.slo_trend_alert:
+                rate_rising = True
+                logger.warning(
+                    "SLO trend alert: predicted p99=%.0fms -- activating pre-scale",
+                    snapshot.predicted_p99_ms or 0
+                )
+
+            # ── Adaptive Engine evaluation ────────────────────────────
+            ctx = adaptive.evaluate(snapshot)
+            if ctx.pre_scale_signal:
+                rate_rising = True
+            if ctx.active_event:
+                logger.info("Event active: %s — mode=%s",
+                            ctx.active_event.name, ctx.effective_mode.name)
+            # Pass frozen services and budget thresholds forward
+            actuator.frozen_services = ctx.frozen_services
+            policy_engine.budget_thresholds = ctx.budget_exhausted_services
+
             # ── Stage 2: Decide ───────────────────────────────────────
             decision_set, audit_record = policy_engine.run_cycle(
                 snapshot, rate_rising_fast=rate_rising
             )
 
-            # ── Stage 3: Actuate (with cooldown guard) ───────────────
-            # Suppress scale actions if within cooldown window to prevent
-            # rapid up/down thrashing from fast polling cycles.
+            # ── Stage 3: Actuate with per-service cooldown ───────────
+            # Each service has its own cooldown timer — allows ACOMP to
+            # rapidly scale a newly pressured service while leaving recently
+            # scaled services in their cooldown window. Prevents v2 thrashing
+            # while enabling fast response to new pressure signals.
             now_check = time.monotonic()
-            cooldown_active = (now_check - last_scale_time) < SCALE_COOLDOWN_SECONDS
-            if cooldown_active and decision_set.actionable():
-                remaining = SCALE_COOLDOWN_SECONDS - (now_check - last_scale_time)
-                logger.info(
-                    "Cooldown active (%.0fs remaining) -- suppressing %d scale actions",
-                    remaining, len(decision_set.actionable())
-                )
-                from acomp.actuator import ActuatorReport
-                actuator_report = ActuatorReport()  # empty report, no patches sent
+            if decision_set.actionable():
+                cooled_decisions = []
+                suppressed = []
+                for decision in decision_set.actionable():
+                    svc = decision.service_name
+                    last_t = last_scale_time.get(svc, 0.0)
+                    remaining = SCALE_COOLDOWN_SECONDS - (now_check - last_t)
+                    if remaining > 0 and not snapshot.slope_signal:
+                        # Suppress unless slope signal overrides cooldown
+                        suppressed.append(svc)
+                        logger.debug(
+                            "Cooldown: %s (%.0fs remaining) -- suppressed",
+                            svc, remaining
+                        )
+                    else:
+                        cooled_decisions.append(decision)
+
+                if suppressed:
+                    logger.info(
+                        "Per-service cooldown suppressed: %s", ", ".join(suppressed)
+                    )
+
+                # Apply only non-cooled decisions
+                if cooled_decisions:
+                    actuator_report = actuator.apply(decision_set)
+                    # Update per-service cooldown timestamps for applied services
+                    for d in cooled_decisions:
+                        last_scale_time[d.service_name] = now_check
+                else:
+                    from acomp.actuator import ActuatorReport
+                    actuator_report = ActuatorReport()
             else:
                 actuator_report = actuator.apply(decision_set)
 
@@ -165,33 +229,20 @@ def main() -> int:
             )
 
             # ── Improvement 1: Adaptive poll interval with hysteresis ────
-            # Use fast polling ONLY during active pressure.
-            # Require 10 consecutive HEALTHY cycles before slowing down
-            # (hysteresis prevents rapid switching that caused thrashing in v2.0)
             state = audit_record.pipeline_state
-            if state == "HEALTHY":
+            slope_active = snapshot.slope_signal
+
+            if state == "HEALTHY" and not slope_active:
                 consecutive_pressure = 0
                 consecutive_healthy += 1
-                # Only slow down after sustained stability (10 cycles = 150s at base)
                 if consecutive_healthy >= 10:
                     current_interval = poll_interval_slow
                 else:
-                    current_interval = poll_interval  # stay at base during transition
-            elif state in ("UPSTREAM_LOAD_PRESSURE", "DOWNSTREAM_DEGRADATION"):
+                    current_interval = poll_interval
+            elif state in ("UPSTREAM_LOAD_PRESSURE", "DOWNSTREAM_DEGRADATION") or slope_active:
                 consecutive_pressure += 1
                 consecutive_healthy = 0
-                current_interval = poll_interval_fast  # react faster under pressure
-            else:
-                current_interval = poll_interval       # base for PIPELINE_CEILING
-
-            # ── Cooldown: prevent thrashing ───────────────────────────
-            # If a scale action was applied this cycle, enforce a cooldown
-            # before the next scale — prevents rapid up/down oscillation
-            # that occurs when fast polling detects transient CPU spikes.
-            now = time.monotonic()
-            if actuator_report.applied():
-                last_scale_time = now
-                logger.debug("Scale applied — cooldown starts (%.0fs)", SCALE_COOLDOWN_SECONDS)
+                current_interval = poll_interval_fast  # fast poll when slope or pressure
 
             # ── Improvement 2: SLO violation escalation ───────────────
             p99 = snapshot.p99_latency_ms
@@ -221,6 +272,8 @@ def main() -> int:
         if running:
             time.sleep(sleep_for)
 
+    api.stop()
+    adaptive._watcher.stop()
     decision_logger.close()
     logger.info("ACOMP controller stopped after %d cycles", cycle_number)
     return 0

@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Test / evaluation results (large, generated data)
+results/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Docker
+*.tar
+
+# Kubernetes secrets / kubeconfig
+kubeconfig
+*.kubeconfig
+
+# Terraform (if used)
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+*.toc
+*.lof
+*.lot
+*.pdf
+
+# Credentials / keys
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+secrets/

@@ -33,6 +33,7 @@ underlying algorithm. This satisfies SQ4 (operational explainability).
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import sys
@@ -70,6 +71,9 @@ class DecisionLogger:
         else:
             self._fh = sys.stdout
             logger.info("Decision Logger: writing to stdout")
+        # Ring buffer — last 500 records kept in memory for the API
+        self._ring: collections.deque = collections.deque(maxlen=500)
+        self.total_cycles: int = 0
 
     def log(
         self,
@@ -103,6 +107,8 @@ class DecisionLogger:
 
         line = json.dumps(record, ensure_ascii=False)
         print(line, file=self._fh, flush=True)
+        self._ring.append(record)
+        self.total_cycles += 1
 
         logger.debug(
             "Cycle %d logged: state=%s root=%s applied=%d rejected=%d",
@@ -114,6 +120,11 @@ class DecisionLogger:
         )
 
         return record
+
+    def recent(self, n: int = 10) -> list[dict]:
+        """Return the last n audit records from the in-memory ring buffer."""
+        records = list(self._ring)
+        return records[-n:] if len(records) >= n else records
 
     def close(self) -> None:
         """Closes the output file if one was opened. No-op for stdout."""

@@ -169,6 +169,9 @@ class PolicyEngine:
         self, snapshot: MetricSnapshot,
         rate_rising_fast: bool = False,
     ) -> tuple[DecisionSet, AuditRecord]:
+        # Use slope_signal from collector if available (overrides external flag)
+        if snapshot.slope_signal:
+            rate_rising_fast = True
         """
         Executes one full Policy Engine cycle as per Algorithm 1 (v2).
 
@@ -193,16 +196,25 @@ class PolicyEngine:
         # so ACOMP pre-scales before CPU actually crosses 70%.
         # This directly addresses the Scenario 1 reactive lag finding.
         # ------------------------------------------------------------------
-        effective_cpu_threshold = (
-            CPU_PRESSURE_THRESHOLD * 0.90  # 63% threshold when rate rising
-            if rate_rising_fast
-            else CPU_PRESSURE_THRESHOLD    # normal 70% threshold
-        )
-        if rate_rising_fast:
+        # Adaptive threshold based on traffic signal:
+        # - Slope detected (rate rising >15%/cycle x2): drop to 50% → aggressive pre-scale
+        # - Rate rising fast (>20% single cycle): drop to 63% → early response
+        # - Normal: 70% → standard HPA behaviour
+        if snapshot.slope_signal:
+            effective_cpu_threshold = CPU_PRESSURE_THRESHOLD * 0.71  # 50% — slope pre-scale
+            logger.info(
+                "Slope pre-scale: threshold=50%% (slope=+%.0f%% for %d cycles)",
+                snapshot.rate_slope_pct,
+                getattr(snapshot, '_consecutive_rising', 2)
+            )
+        elif rate_rising_fast:
+            effective_cpu_threshold = CPU_PRESSURE_THRESHOLD * 0.90  # 63%
             logger.info(
                 "Pre-scaling mode: effective CPU threshold lowered to %.0f%%",
                 effective_cpu_threshold * 100
             )
+        else:
+            effective_cpu_threshold = CPU_PRESSURE_THRESHOLD  # 70%
 
         # ------------------------------------------------------------------
         # Stage 1: State Classification (Algorithm 1, Lines 1-11)
