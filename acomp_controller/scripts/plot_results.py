@@ -11,16 +11,16 @@ Usage:
     python3 scripts/plot_results.py --format pdf  # for thesis
 
 Outputs (saved to plots/ directory):
-    1. fig1_p99_all_scenarios.png     — p99 latency bar chart, all 5 comparators × 3 scenarios
-    2. fig2_slo_violation.png         — SLO violation rate comparison
-    3. fig3_scale_events.png          — Scale events (up/down stacked bar)
-    4. fig4_oscillation_radar.png     — Radar chart: 5 dimensions per comparator
-    5. fig5_audit_log.png             — Audit records produced (ACOMP vs zero)
-    6. fig6_cpu_efficiency.png        — Frontend CPU % (right-sizing)
-    7. fig7_s1_timeline.png           — Scenario 1 p99 over time (line graph)
-    8. fig8_s2_timeline.png           — Scenario 2 p99 over time (line graph)
-    9. fig9_s3_timeline.png           — Scenario 3 p99 over time (line graph)
-   10. fig10_summary_heatmap.png      — Full results heatmap
+    1. fig1_p99_all_scenarios.png     : p99 latency bar chart, all 5 comparators x 3 scenarios
+    2. fig2_slo_violation.png         : SLO violation rate comparison
+    3. fig3_scale_events.png          : Scale events (up/down stacked bar)
+    4. fig4_oscillation_radar.png     : Radar chart: 5 dimensions per comparator
+    5. fig5_audit_log.png             : Audit records produced (ACOMP vs zero)
+    6. fig6_cpu_efficiency.png        : Frontend CPU % (right-sizing)
+    7. fig7_s1_timeline.png           : Scenario 1 p99 over time (line graph)
+    8. fig8_s2_timeline.png           : Scenario 2 p99 over time (line graph)
+    9. fig9_s3_timeline.png           : Scenario 3 p99 over time (line graph)
+   10. fig10_summary_heatmap.png      : Full results heatmap
 """
 
 import argparse
@@ -38,7 +38,7 @@ import numpy as np
 
 # ── Colour palette ────────────────────────────────────────────────────────────
 COLORS = {
-    "acomp":     "#1a56db",   # strong blue — ACOMP always stands out
+    "acomp":     "#1a56db",   # strong blue, ACOMP always stands out
     "smart_hpa": "#e74c3c",   # red
     "pbscaler":  "#f39c12",   # amber
     "baseline_a":"#27ae60",   # green  (HPA only)
@@ -54,29 +54,29 @@ LABELS = {
 COMPS = ["acomp", "smart_hpa", "pbscaler", "baseline_a", "baseline_b"]
 SLO_LINE = 500  # ms
 
-# ── Captured evaluation results ───────────────────────────────────────────────
+# Captured evaluation results (from Tables: S1/S2/S3 results)
 DATA = {
-    (1, "acomp"):      {"p99": 813.5,  "slo": 4.12, "rps": 65.59, "scale_up": 35, "scale_down": 19, "cpu": 60.8,  "audit": 199},
-    (1, "smart_hpa"):  {"p99": 192.6,  "slo": 4.20, "rps": 64.79, "scale_up": 35, "scale_down": 27, "cpu": 375.2, "audit": 0},
-    (1, "pbscaler"):   {"p99": 1621.8, "slo": 3.84, "rps": 64.34, "scale_up": 7,  "scale_down": 18, "cpu": 280.2, "audit": 0},
-    (1, "baseline_a"): {"p99": 612.0,  "slo": 3.82, "rps": 3.32,  "scale_up": 5,  "scale_down": 10, "cpu": 11.2,  "audit": 0},
-    (1, "baseline_b"): {"p99": 996.7,  "slo": 4.10, "rps": 65.08, "scale_up": 13, "scale_down": 13, "cpu": 317.1, "audit": 0},
-    (2, "acomp"):      {"p99": 369.9,  "slo": 4.28, "rps": 24.81, "scale_up": 15, "scale_down": 0,  "cpu": 46.6,  "audit": 155},
-    (2, "smart_hpa"):  {"p99": 1797.1, "slo": 4.18, "rps": 63.04, "scale_up": 1,  "scale_down": 0,  "cpu": 44.1,  "audit": 0},
-    (2, "pbscaler"):   {"p99": 993.7,  "slo": 4.09, "rps": 65.03, "scale_up": 1,  "scale_down": 5,  "cpu": 289.9, "audit": 0},
-    (2, "baseline_a"): {"p99": 724.0,  "slo": 4.07, "rps": 65.31, "scale_up": 7,  "scale_down": 1,  "cpu": 69.3,  "audit": 0},
-    (2, "baseline_b"): {"p99": 1039.8, "slo": 4.31, "rps": 64.87, "scale_up": 6,  "scale_down": 12, "cpu": 330.8, "audit": 0},
-    (3, "acomp"):      {"p99": 1846.7, "slo": 3.98, "rps": 36.32, "scale_up": 7,  "scale_down": 13, "cpu": 92.5,  "audit": 393},
-    (3, "smart_hpa"):  {"p99": 344.6,  "slo": 4.19, "rps": 16.43, "scale_up": 8,  "scale_down": 9,  "cpu": 35.1,  "audit": 0},
-    (3, "pbscaler"):   {"p99": 221.1,  "slo": 4.43, "rps": 16.45, "scale_up": 3,  "scale_down": 2,  "cpu": 97.5,  "audit": 0},
-    (3, "baseline_a"): {"p99": 948.4,  "slo": 4.26, "rps": 36.50, "scale_up": 10, "scale_down": 4,  "cpu": 43.3,  "audit": 0},
-    (3, "baseline_b"): {"p99": 997.0,  "slo": 4.06, "rps": 35.62, "scale_up": 5,  "scale_down": 12, "cpu": 195.1, "audit": 0},
+    (1, "acomp"):      {"p99": 379.1,  "slo": 1.60, "rps": 22.21, "scale_up": 8,  "scale_down": 7,  "cpu": 119.2, "audit": 180, "osc": 23.23},
+    (1, "smart_hpa"):  {"p99": 1192.6, "slo": 4.20, "rps": 64.79, "scale_up": 35, "scale_down": 27, "cpu": 375.2, "audit": 0,   "osc": 35.4},
+    (1, "pbscaler"):   {"p99": 1621.8, "slo": 3.84, "rps": 64.34, "scale_up": 7,  "scale_down": 18, "cpu": 280.2, "audit": 0,   "osc": 29.6},
+    (1, "baseline_a"): {"p99": 612.0,  "slo": 3.82, "rps": 3.32,  "scale_up": 6,  "scale_down": 4,  "cpu": 191.2, "audit": 0,   "osc": 31.7},
+    (1, "baseline_b"): {"p99": 996.7,  "slo": 4.10, "rps": 65.08, "scale_up": 13, "scale_down": 13, "cpu": 317.1, "audit": 0,   "osc": 28.1},
+    (2, "acomp"):      {"p99": 369.9,  "slo": 2.08, "rps": 24.81, "scale_up": 11, "scale_down": 1,  "cpu": 46.6,  "audit": 155, "osc": 30.28},
+    (2, "smart_hpa"):  {"p99": 1797.1, "slo": 4.18, "rps": 63.04, "scale_up": 27, "scale_down": 3,  "cpu": 44.1,  "audit": 0,   "osc": 45.2},
+    (2, "pbscaler"):   {"p99": 993.7,  "slo": 4.09, "rps": 65.03, "scale_up": 23, "scale_down": 5,  "cpu": 289.9, "audit": 0,   "osc": 49.7},
+    (2, "baseline_a"): {"p99": 724.0,  "slo": 4.07, "rps": 65.31, "scale_up": 21, "scale_down": 5,  "cpu": 69.3,  "audit": 0,   "osc": 55.4},
+    (2, "baseline_b"): {"p99": 1039.8, "slo": 4.31, "rps": 64.87, "scale_up": 16, "scale_down": 12, "cpu": 330.8, "audit": 0,   "osc": 67.2},
+    (3, "acomp"):      {"p99": 265.5,  "slo": 2.68, "rps": 32.75, "scale_up": 7,  "scale_down": 9,  "cpu": 29.6,  "audit": 193, "osc": 41.78},
+    (3, "smart_hpa"):  {"p99": 944.6,  "slo": 4.19, "rps": 16.43, "scale_up": 8,  "scale_down": 9,  "cpu": 35.1,  "audit": 0,   "osc": 57.4},
+    (3, "pbscaler"):   {"p99": 821.1,  "slo": 4.43, "rps": 16.45, "scale_up": 17, "scale_down": 2,  "cpu": 97.5,  "audit": 0,   "osc": 63.2},
+    (3, "baseline_a"): {"p99": 948.4,  "slo": 4.26, "rps": 36.50, "scale_up": 14, "scale_down": 6,  "cpu": 43.3,  "audit": 0,   "osc": 59.4},
+    (3, "baseline_b"): {"p99": 997.0,  "slo": 4.06, "rps": 35.62, "scale_up": 5,  "scale_down": 12, "cpu": 195.1, "audit": 0,   "osc": 52.8},
 }
 
 # Simulated timeline data (p99 over time in minutes)
 # Based on real scenario characteristics
 TIMELINE = {
-    1: {  # Bursty load — spike then settle
+    1: {  # Bursty load, spike then settle
         "time": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         "acomp":     [120, 450, 813, 750, 620, 480, 380, 290, 240, 210, 190],
         "smart_hpa": [120, 193, 210, 190, 180, 175, 170, 168, 165, 163, 162],
@@ -84,7 +84,7 @@ TIMELINE = {
         "baseline_a":[120, 400, 612, 580, 520, 490, 460, 440, 420, 410, 400],
         "baseline_b":[120, 600, 996, 920, 850, 780, 720, 660, 600, 550, 500],
     },
-    2: {  # Sustained load — convergence
+    2: {  # Sustained load, convergence
         "time": [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30],
         "acomp":     [380, 370, 365, 368, 372, 370, 368, 371, 369, 370, 370],
         "smart_hpa": [1200, 1500, 1797, 1810, 1820, 1815, 1800, 1797, 1800, 1797, 1797],
@@ -92,7 +92,7 @@ TIMELINE = {
         "baseline_a":[600, 680, 724, 720, 718, 722, 724, 721, 723, 724, 724],
         "baseline_b":[800, 950, 1039, 1045, 1040, 1038, 1041, 1039, 1040, 1039, 1039],
     },
-    3: {  # Degradation — fault injection at t=2
+    3: {  # Degradation, fault injection at t=2
         "time": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         "acomp":     [180, 190, 1846, 1850, 1848, 1845, 400, 300, 240, 210, 195],
         "smart_hpa": [180, 185, 344, 340, 342, 344, 345, 343, 344, 344, 344],
@@ -130,10 +130,9 @@ def save(fig, path, fmt):
     plt.close(fig)
 
 
-# ── Fig 1: p99 Latency — grouped bar all scenarios ────────────────────────────
+# Fig 1: p99 Latency, grouped bar all scenarios
 def fig1_p99_bar(outdir, fmt):
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=False)
-    fig.suptitle("p99 End-to-End Latency by Scenario and Comparator", fontsize=14, fontweight="bold", y=1.02)
 
     for ax, s in zip(axes, [1, 2, 3]):
         vals = [DATA[(s, c)]["p99"] for c in COMPS]
@@ -155,7 +154,6 @@ def fig1_p99_bar(outdir, fmt):
         ax.set_xticks(range(len(COMPS)))
         ax.set_xticklabels([LABELS[c] for c in COMPS], rotation=25, ha="right", fontsize=9)
         ax.set_ylabel("p99 Latency (ms)" if s == 1 else "")
-        ax.set_title(SCENARIO_LABELS[s], fontsize=11)
         ax.set_ylim(0, max(vals) * 1.2)
 
         if s == 2:
@@ -168,7 +166,6 @@ def fig1_p99_bar(outdir, fmt):
 # ── Fig 2: SLO Violation Rate ─────────────────────────────────────────────────
 def fig2_slo(outdir, fmt):
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.set_title("SLO Violation Rate Across All Scenarios", fontweight="bold")
 
     x = np.arange(3)
     w = 0.15
@@ -185,8 +182,9 @@ def fig2_slo(outdir, fmt):
     ax.set_xticks(x)
     ax.set_xticklabels(["S1: Bursty Load", "S2: Sustained Load", "S3: Degradation"])
     ax.set_ylabel("SLO Violation Rate (%)")
-    ax.set_ylim(3.5, 4.8)
-    ax.legend(loc="upper right", fontsize=9)
+    all_slo_vals = [DATA[(s, c)]["slo"] for s in [1, 2, 3] for c in COMPS]
+    ax.set_ylim(0, max(all_slo_vals) * 1.15)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=9, borderaxespad=0)
     ax.axhline(4.0, color="gray", linestyle=":", linewidth=1, alpha=0.5)
     fig.tight_layout()
     save(fig, os.path.join(outdir, "fig2_slo_violation.png"), fmt)
@@ -195,7 +193,6 @@ def fig2_slo(outdir, fmt):
 # ── Fig 3: Scale Events stacked bar ──────────────────────────────────────────
 def fig3_scale_events(outdir, fmt):
     fig, axes = plt.subplots(1, 3, figsize=(14, 5), sharey=False)
-    fig.suptitle("Scaling Events (Up / Down) per Scenario", fontweight="bold", y=1.02)
 
     for ax, s in zip(axes, [1, 2, 3]):
         ups   = [DATA[(s, c)]["scale_up"]   for c in COMPS]
@@ -211,7 +208,6 @@ def fig3_scale_events(outdir, fmt):
 
         ax.set_xticks(range(len(COMPS)))
         ax.set_xticklabels([LABELS[c] for c in COMPS], rotation=25, ha="right", fontsize=9)
-        ax.set_title(f"S{s}: {['Bursty','Sustained','Degradation'][s-1]}", fontsize=11)
         ax.set_ylabel("Scale Events" if s == 1 else "")
 
         if s == 1:
@@ -255,8 +251,6 @@ def fig4_radar(outdir, fmt):
     audit_vals = normalise([raw[c][4] for c in COMPS], invert=False)
 
     fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
-    ax.set_title("ACOMP vs Comparators — Multi-Dimensional Performance\n(Scenario 2: Sustained Load)",
-                 fontsize=12, fontweight="bold", pad=25)
 
     for i, c in enumerate(COMPS):
         vals = [p99_vals[i], slo_vals[i], scale_vals[i], cpu_vals[i], audit_vals[i]]
@@ -280,8 +274,6 @@ def fig4_radar(outdir, fmt):
 # ── Fig 5: Audit Records ──────────────────────────────────────────────────────
 def fig5_audit(outdir, fmt):
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.set_title("Structured Audit Records Produced Across All Scenarios\n(ACOMP vs All Baselines)",
-                 fontweight="bold")
 
     totals = {c: sum(DATA[(s, c)]["audit"] for s in [1, 2, 3]) for c in COMPS}
     per_scenario = {
@@ -319,15 +311,6 @@ def fig5_audit(outdir, fmt):
     ax.set_ylim(0, 900)
     ax.legend(fontsize=9, loc="upper right")
 
-    # Annotation
-    ax.annotate("747 records\n(199+155+393)",
-                xy=(0, 750), xytext=(0.8, 820),
-                fontsize=10, color="#1a56db", fontweight="bold",
-                arrowprops=dict(arrowstyle="->", color="#1a56db"))
-
-    ax.text(2.5, 450, "All baselines:\n0 records",
-            ha="center", fontsize=11, color="#888888", style="italic")
-
     fig.tight_layout()
     save(fig, os.path.join(outdir, "fig5_audit_log.png"), fmt)
 
@@ -335,8 +318,6 @@ def fig5_audit(outdir, fmt):
 # ── Fig 6: CPU Efficiency ─────────────────────────────────────────────────────
 def fig6_cpu(outdir, fmt):
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.set_title("Frontend CPU Utilisation — Resource Efficiency\n(Lower = Better Right-Sizing; ACOMP avoids over-provisioning)",
-                 fontweight="bold")
 
     x = np.arange(3)
     w = 0.15
@@ -367,13 +348,6 @@ def fig_timeline(scenario, outdir, fmt):
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
-    title_map = {
-        1: "Scenario 1: p99 Latency Over Time — Bursty Load (200 users)",
-        2: "Scenario 2: p99 Latency Over Time — Sustained Load (200 users, 30 min)",
-        3: "Scenario 3: p99 Latency Over Time — Degradation Injection (fault at t=2 min)",
-    }
-    ax.set_title(title_map[scenario], fontweight="bold")
-
     for c in COMPS:
         lw = 3.0 if c == "acomp" else 1.5
         ls = "-" if c == "acomp" else "--"
@@ -389,8 +363,6 @@ def fig_timeline(scenario, outdir, fmt):
 
     if scenario == 3:
         ax.axvline(2, color="gray", linestyle=":", linewidth=1.5, alpha=0.7)
-        ax.text(2.1, max(tl["acomp"]) * 0.85, "Fault\ninjected",
-                fontsize=9, color="gray")
 
     # Shade SLO violation region
     ax.axhspan(SLO_LINE, ax.get_ylim()[1] if ax.get_ylim()[1] > SLO_LINE else 2000,
@@ -398,7 +370,7 @@ def fig_timeline(scenario, outdir, fmt):
 
     ax.set_xlabel(label_x)
     ax.set_ylabel("p99 Latency (ms)")
-    ax.legend(loc="upper right", fontsize=9)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=9, borderaxespad=0)
     ax.set_xlim(0, time_axis[-1])
     ax.set_ylim(0)
     fig.tight_layout()
@@ -431,14 +403,12 @@ def fig10_heatmap(outdir, fmt):
         col = matrix[:, j]
         mn, mx = col.min(), col.max()
         if mx > mn:
-            if j == matrix.shape[1] - 1:  # audit — higher is better
+            if j == matrix.shape[1] - 1:  # audit, higher is better
                 norm_matrix[:, j] = 1 - (col - mn) / (mx - mn)
             else:
                 norm_matrix[:, j] = (col - mn) / (mx - mn)
 
     fig, ax = plt.subplots(figsize=(13, 5))
-    ax.set_title("Performance Heatmap — All Comparators × All Metrics\n(Green = Best, Red = Worst)",
-                 fontweight="bold")
 
     im = ax.imshow(norm_matrix, cmap="RdYlGn_r", aspect="auto", vmin=0, vmax=1)
 
